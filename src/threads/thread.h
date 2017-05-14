@@ -88,8 +88,12 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int old_priority;
     int ticks_blocked;
     struct list_elem allelem;           /* List element for all threads list. */
+    struct list locks;
+    bool donated;
+    struct lock *blocked;
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
@@ -138,6 +142,8 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+bool cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool cmp_priority2 (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 
 void blocked_thread_check(struct thread *t, void *aux UNUSED);
 

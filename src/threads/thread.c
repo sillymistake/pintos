@@ -70,6 +70,7 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 bool cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool cmp_priority2 (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 static tid_t allocate_tid (void);
 
 /* Initializes the threading system by transforming the code
@@ -89,6 +90,12 @@ bool
 cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
   return list_entry(a, struct thread, elem)->priority > list_entry(b, struct thread, elem)->priority;
+}
+
+bool
+cmp_priority2 (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  return list_entry(a, struct lock, holder_elem)->lock_priority > list_entry(b, struct lock, holder_elem)->lock_priority;
 }
 
 void
@@ -355,8 +362,23 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  enum intr_level old_level;
+  old_level = intr_disable();
+  struct thread *curr = thread_current();
+  if(curr->donated == false)
+  {
+    curr->priority = curr->old_priority = new_priority;
+  }
+  else if(curr->priority > new_priority) //优先级变低
+  {
+    curr->old_priority = new_priority;
+  }
+  else //优先级变高
+  {
+    curr->priority = curr->old_priority = new_priority;
+  }
   thread_yield();
+  intr_set_level(old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -481,8 +503,12 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->old_priority = priority;
+  t->donated = false;
+  t->blocked = NULL;
+  list_init(&t->locks);
   t->magic = THREAD_MAGIC;
-  list_insert_ordered (&all_list, &t->allelem, (list_less_func *) &cmp_priority, NULL);
+  list_insert_ordered (&all_list, &t->allelem, cmp_priority, NULL);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and

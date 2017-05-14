@@ -68,7 +68,8 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      list_push_back (&sema->waiters, &thread_current ()->elem);
+      //list_push_back (&sema->waiters, &thread_current ()->elem);
+      list_insert_ordered(&sema->waiters, &thread_current ()->elem, (list_less_func *) &cmp_priority, NULL);
       thread_block ();
     }
   sema->value--;
@@ -114,9 +115,13 @@ sema_up (struct semaphore *sema)
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+  {
+    list_sort(&sema->waiters, cmp_priority, NULL);
+    thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
+  }
+    
   sema->value++;
+  thread_yield();
   intr_set_level (old_level);
 }
 
@@ -179,6 +184,8 @@ lock_init (struct lock *lock)
 
   lock->holder = NULL;
   sema_init (&lock->semaphore, 1);
+  
+  lock->lock_priority = -1;
 }
 
 /* Acquires LOCK, sleeping until it becomes available if
@@ -196,8 +203,46 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  enum intr_level old_level;
+  old_level = intr_disable();
+  struct thread *thrd = lock->holder;
+  struct thread *curr = thread_current();
+  struct lock *another = lock;
+  curr->blocked = another;
+
+  while(thrd != NULL && thrd->priority < curr->priority)
+  {
+    thrd->donated = true;
+    thrd->priority = curr->priority; //修改后
+    //对锁进行更新
+    if(another->lock_priority < curr->priority)
+    {
+      another->lock_priority = curr->priority;
+      //对占有锁的线程的锁队列更新
+      list_remove(&another->holder_elem);
+      list_insert_ordered(&thrd->locks, &another->holder_elem, cmp_priority2, NULL);
+    }
+    //判断是否需要递归捐赠
+    if(thrd->status == THREAD_BLOCKED && thrd->blocked != NULL)
+    {
+      another = thrd->blocked;
+      thrd = thrd->blocked->holder;
+    }
+    else
+    {
+      break;
+    }
+    
+  }
+
   sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+  lock->holder = curr;
+
+  lock->lock_priority = curr->priority;
+  curr->blocked = NULL;
+  //对当前线程的锁队列进行更新
+  list_insert_ordered(&curr->locks, &lock->holder_elem, cmp_priority2, NULL);
+  intr_set_level(old_level);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -231,8 +276,41 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
+  enum intr_level old_level;
+  old_level = intr_disable();
+  struct thread *curr = thread_current();
+  struct list_elem *l;
+  struct lock *another;
+
+  //锁相关变量的设置
+  list_remove(&lock->holder_elem);
+  lock->lock_priority = -1;
   lock->holder = NULL;
+  
   sema_up (&lock->semaphore);
+  
+  //对当前线程的修改
+  if(list_empty(&curr->locks)) //没有其余锁
+  {
+    curr->donated = false;
+    thread_set_priority(curr->old_priority); //恢复原来的优先级
+  }
+  else
+  {
+    list_sort(&curr->locks, cmp_priority2, NULL);
+    l = list_front(&curr->locks); //取优先级最大的锁
+    another = list_entry(l, struct lock, holder_elem);
+    if(another->lock_priority > curr->old_priority)
+    {
+      curr->priority = another->lock_priority;
+      thread_yield();
+    }
+    else
+    {
+      thread_set_priority(curr->old_priority);
+    }
+  }
+  intr_set_level(old_level);
 }
 
 /* Returns true if the current thread holds LOCK, false
